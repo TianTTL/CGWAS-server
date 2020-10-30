@@ -45,10 +45,16 @@ int main(int argc, char * argv[]) {
     }
 
     // pretreatment
-    float* tm = new float [snpn * max(orgcormDim, corm2Dim)];
+    static float* tm;
+    #pragma omp threadprivate(tm)
+    #pragma omp parallel num_threads(threadsNum)
+    {
+       tm = new float [snpn * max(orgcormDim, corm2Dim)];
+    }
     gsl::gsl_vector * zeroVector_orgcorm = gsl::gsl_vector_calloc(orgcormDim); // initialize the array to 0
     gsl::gsl_vector * zeroVector_corm2 = gsl::gsl_vector_calloc(corm2Dim); // initialize the array to 0
-    
+    double pm1, pm2, pm3;
+   
     // prepare for mkdf
     // rng seed
     gsl::gsl_rng * r_global = gsl::gsl_rng_alloc(gsl::gsl_rng_default);
@@ -76,11 +82,10 @@ int main(int argc, char * argv[]) {
     vector<double> simup;
 #   pragma omp parallel for \
     num_threads(threadsNum) \
-    private(tm) \
+    private(pm1, pm2, pm3) \
     shared(swit, snpn, thv, orgcormDim, corm2Dim, r_global, A_orgcorm, A_corm2, simup) \
     schedule(dynamic, CHUNK_SIZE)
     for (int i = 0; i < simulateTimes; i++) {
-        double pm1, pm2, pm3;
         mkdf(A_orgcorm, orgcormDim, zeroVector_orgcorm, tm, r_global, snpn);
         metafSimulation(tm, orgcorm, sigeffcorm, thv, es, orgcormDim, pm1, snpn);
         sortrt(tm, orgcorm, orgcormDim, thv, pm3, snpn);
@@ -119,11 +124,14 @@ int main(int argc, char * argv[]) {
     outputFile.close();
 
     // release memory
+    #pragma omp parallel num_threads(threadsNum)
+    {
+       delete[] tm;
+    }
     delete[] orgcorm;
     delete[] corm2;
     delete[] sigeffcorm;
     delete[] es;
-    delete tm;
     gsl_rng_free (r_global);
 
     // time elapse
