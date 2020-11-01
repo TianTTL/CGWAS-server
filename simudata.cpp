@@ -12,7 +12,7 @@ namespace gsl {
     #include "gsl/gsl_randist.h"
 }
 
-#define CHUNK_SIZE 64
+#define CHUNK_SIZE 1
 
 int main(int argc, char * argv[]) {
     int status; // error handle
@@ -23,9 +23,9 @@ int main(int argc, char * argv[]) {
     float *es = new float [MaxPheNum];
     float *sigeffcorm = new float [MaxPheNum * MaxPheNum * 2];
     int threadsNum;
+    struct timeval time_start;
 
     // time stamp
-    struct timeval time_start;
     gettimeofday(&time_start,NULL);
 
     // input data
@@ -44,33 +44,41 @@ int main(int argc, char * argv[]) {
         return(1);
     }
 
+    timeElapse(time_start, "input");
+
     // pretreatment
     static float* tm;
-    #pragma omp threadprivate(tm)
-    #pragma omp parallel num_threads(threadsNum)
+    static gsl::gsl_vector * rngGMVOrgcorm;
+    static gsl::gsl_vector * rngGMVcorm2;
+#   pragma omp threadprivate(tm, rngGMVOrgcorm, rngGMVcorm2)
+#   pragma omp parallel num_threads(threadsNum) \
+    shared(snpn, orgcormDim, corm2Dim)
     {
        tm = new float [snpn * max(orgcormDim, corm2Dim)];
+       rngGMVOrgcorm = gsl::gsl_vector_alloc(orgcormDim);
+       rngGMVcorm2 = gsl::gsl_vector_alloc(corm2Dim);
     }
-    gsl::gsl_vector * zeroVector_orgcorm = gsl::gsl_vector_calloc(orgcormDim); // initialize the array to 0
-    gsl::gsl_vector * zeroVector_corm2 = gsl::gsl_vector_calloc(corm2Dim); // initialize the array to 0
     double pm1, pm2, pm3;
-   
+    double* simup = new double[3 * simulateTimes];
+
     // prepare for mkdf
+    // initialize the array to 0
+    gsl::gsl_vector * zeroVector_orgcorm = gsl::gsl_vector_calloc(orgcormDim);
+    gsl::gsl_vector * zeroVector_corm2 = gsl::gsl_vector_calloc(corm2Dim);
     // rng seed
     gsl::gsl_rng * r_global = gsl::gsl_rng_alloc(gsl::gsl_rng_default);
     struct timeval ts; // Seed generation based on time
     gettimeofday(&ts,NULL);
     unsigned long mySeed = ts.tv_sec + ts.tv_usec;
     gsl::gsl_rng_set(r_global, mySeed);
-
-    //cholesky
+    //cholesky for orgcorm
     gsl::gsl_matrix * A_orgcorm = gsl::gsl_matrix_alloc(orgcormDim, orgcormDim);
     for (int i = 0; i < orgcormDim; i++)
         for (int j = 0; j < orgcormDim; j++){
             gsl::gsl_matrix_set(A_orgcorm, i, j, orgcorm[i * orgcormDim + j]);
         }
     gsl::gsl_linalg_cholesky_decomp1(A_orgcorm);
-
+    //cholesky for corm2
     gsl::gsl_matrix * A_corm2 = gsl::gsl_matrix_alloc(corm2Dim, corm2Dim);
     for (int i = 0; i < corm2Dim; i++)
         for (int j = 0; j < corm2Dim; j++){
@@ -78,30 +86,30 @@ int main(int argc, char * argv[]) {
         }
     gsl::gsl_linalg_cholesky_decomp1(A_corm2);
 
+    timeElapse(time_start, "pretreatment");
+
     // simudata main step
-    vector<double> simup;
 #   pragma omp parallel for \
     num_threads(threadsNum) \
     private(pm1, pm2, pm3) \
     shared(swit, snpn, thv, orgcormDim, corm2Dim, r_global, A_orgcorm, A_corm2, simup) \
-    schedule(dynamic, CHUNK_SIZE)
+    schedule(dynamic)
     for (int i = 0; i < simulateTimes; i++) {
-        mkdf(A_orgcorm, orgcormDim, zeroVector_orgcorm, tm, r_global, snpn);
+        mkdf(rngGMVOrgcorm, snpn, r_global, zeroVector_orgcorm, A_orgcorm, tm, orgcormDim);
+
         metafSimulation(tm, orgcorm, sigeffcorm, thv, es, orgcormDim, pm1, snpn);
         sortrt(tm, orgcorm, orgcormDim, thv, pm3, snpn);
         if (swit) {
-            mkdf(A_corm2, corm2Dim, zeroVector_corm2, tm, r_global, snpn);
+            mkdf(rngGMVcorm2, snpn, r_global, zeroVector_corm2, A_corm2, tm, corm2Dim);
             sortrt(tm, corm2, corm2Dim, thv, pm2, snpn);
         }
-#       pragma omp critical
-        {
-            simup.push_back(pm1);
-            if (swit) {
-                simup.push_back(pm2);
-            }
-            simup.push_back(pm3);    
-        }
+
+        simup[i * 3] = pm1;
+        if (swit) { simup[i * 3 + 1] = pm2; }
+        simup[i * 3 + 2] = pm3;
     }
+
+    timeElapse(time_start, "main");
 
     // output simup
     string outputFilePath;
@@ -109,17 +117,9 @@ int main(int argc, char * argv[]) {
     outputFilePath = outputFileDir + "/simup";
     outputFile.open(outputFilePath.data(), ios::out);
     outputFile << scientific << setprecision(5);
-    for (int i = 0; i < simup.size(); i++) {
-        outputFile << simup[i] << "\t";
-        if (swit) {
-            if ((i + 1) % 3 == 0) {
-                outputFile << endl;
-            }
-        } else {
-            if ((i + 1) % 2 == 0) {
-                outputFile << endl;
-            }
-        }
+    for (int i = 0; i < simulateTimes; i++) {
+        outputFile << simup[i * 3] << "\t";
+        if (swit) { outputFile << simup[i * 3 + 1] << "\t"; }
     }
     outputFile.close();
 
@@ -127,19 +127,18 @@ int main(int argc, char * argv[]) {
     #pragma omp parallel num_threads(threadsNum)
     {
        delete[] tm;
+       gsl::gsl_vector_free(rngGMVOrgcorm);
+       gsl::gsl_vector_free(rngGMVcorm2);
     }
+    gsl::gsl_vector_free(zeroVector_orgcorm);
+    gsl::gsl_vector_free(zeroVector_corm2);
     delete[] orgcorm;
     delete[] corm2;
     delete[] sigeffcorm;
     delete[] es;
     gsl_rng_free (r_global);
 
-    // time elapse
-    struct timeval time_end;
-    gettimeofday(&time_end,NULL);
-    cout << "time use:" 
-    << (time_end.tv_sec-time_start.tv_sec)+(time_end.tv_usec-time_start.tv_usec)/1000000.0 
-    << "s" << endl;
+    timeElapse(time_start, "output & free memory");
 
     return(0);
 }
@@ -189,9 +188,8 @@ int inputParam(string inputFileDir,
     inputFile.close();
 }
 
-void mkdf(gsl::gsl_matrix *A, int cormDim, gsl::gsl_vector *zeroVector, float *tm,  gsl::gsl_rng *r, int snpn) {
+void mkdf(gsl::gsl_vector * generatorRlt, int snpn, gsl::gsl_rng *r, gsl::gsl_vector *zeroVector, gsl::gsl_matrix *A, float *tm, int cormDim) {
     //random number generator
-    gsl::gsl_vector * generatorRlt = gsl::gsl_vector_alloc(cormDim);
     for (int i = 0; i < snpn; i++){
         gsl::gsl_ran_multivariate_gaussian(r, zeroVector, A, generatorRlt);
         for (int j = 0; j < cormDim; j++) {
@@ -448,4 +446,13 @@ int sortrt(float* tm, float* corm, int dim, float thv, double &pm, int snpn) {
         pm = min(pm, top_current);
     }
     return(0);
+}
+
+void timeElapse(timeval &time_start, string stepName) {
+    struct timeval time_end;
+    gettimeofday(&time_end,NULL);
+    cout << stepName + " step using time:" 
+    << (time_end.tv_sec-time_start.tv_sec)+(time_end.tv_usec-time_start.tv_usec)/1000000.0 
+    << "s" << endl;
+    gettimeofday(&time_start,NULL);
 }
