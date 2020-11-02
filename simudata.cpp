@@ -94,46 +94,12 @@ int main(int argc, char * argv[]) {
         errcode = vsRngGaussianMV(VSL_RNG_METHOD_GAUSSIANMV_BOXMULLER2, 
                     streamPriv[threadID], snpn, tm, 
                     orgcormDim, VSL_MATRIX_STORAGE_FULL, zeroVector_orgcorm, T_orgcorm);
-        // test
-        // if (i == 0) {
-        //     string outputFilePath;
-        //     fstream outputFile;
-        //     outputFilePath = outputFileDir + "/tm1";
-        //     outputFile.open(outputFilePath.data(), ios::out);
-        //     outputFile << scientific << setprecision(5);
-        //     for (int j = 0; j < snpn; j++) {
-        //         for (int k = 0; k < orgcormDim; k++) {
-        //             outputFile << tm[j * orgcormDim + k] << "\t";
-        //         }
-        //         outputFile << endl;
-        //     }
-        //     outputFile.close();
-        // }
-        // test end
-
         metafSimulation(tm, orgcorm, sigeffcorm, thv, es, orgcormDim, pm1, snpn);
         sortrt(tm, orgcorm, orgcormDim, thv, pm3, snpn);
         if (swit) {
             errcode = vsRngGaussianMV(VSL_RNG_METHOD_GAUSSIANMV_BOXMULLER2, 
                                 streamPriv[threadID], snpn, tm, 
                                 corm2Dim, VSL_MATRIX_STORAGE_FULL, zeroVector_corm2, T_corm2);
-        // test
-        // if (i == 0) {
-        //     string outputFilePath;
-        //     fstream outputFile;
-        //     outputFilePath = outputFileDir + "/tm2";
-        //     outputFile.open(outputFilePath.data(), ios::out);
-        //     outputFile << scientific << setprecision(5);
-        //     for (int j = 0; j < snpn; j++) {
-        //         for (int k = 0; k < corm2Dim; k++) {
-        //             outputFile << tm[j * corm2Dim + k] << "\t";
-        //         }
-        //         outputFile << endl;
-        //     }
-        //     outputFile.close();
-        // }
-        // test end
-
             sortrt(tm, corm2, corm2Dim, thv, pm2, snpn);
         }
 
