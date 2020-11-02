@@ -17,7 +17,6 @@ namespace gsl {
 int inputParam(string inputFileDir, 
                float *orgcorm, float *sigeffcorm, float *corm2, float *es, 
                int orgcormDim, int corm2Dim);
-void mkdf(gsl::gsl_vector * generatorRlt, int snpn, gsl::gsl_rng *r, gsl::gsl_vector *zeroVector, gsl::gsl_matrix *A, float *tm, int cormDim);
 int metafSimulation(float* tm, float*  bgc, float* efd, float thv, float* es, int dim, double &pm, int snpn);
 int calcInverseMatrix(float* pDst, const float* pSrc, int dim);
 int trtvf(vector<float>& v, vector<int>& extractId, int n, float* cm, int dim, double &rlt);

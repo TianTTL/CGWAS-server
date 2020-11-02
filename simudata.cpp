@@ -12,8 +12,6 @@ namespace gsl {
     #include "gsl/gsl_randist.h"
 }
 
-#define CHUNK_SIZE 1
-
 int main(int argc, char * argv[]) {
     int status; // error handle
     int swit, orgcormDim, corm2Dim, snpn, simulateTimes;
@@ -50,41 +48,38 @@ int main(int argc, char * argv[]) {
     static float* tm;
     static gsl::gsl_vector * rngGMVOrgcorm;
     static gsl::gsl_vector * rngGMVcorm2;
-#   pragma omp threadprivate(tm, rngGMVOrgcorm, rngGMVcorm2)
+#   pragma omp threadprivate(tm)
 #   pragma omp parallel num_threads(threadsNum) \
     shared(snpn, orgcormDim, corm2Dim)
     {
        tm = new float [snpn * max(orgcormDim, corm2Dim)];
-       rngGMVOrgcorm = gsl::gsl_vector_alloc(orgcormDim);
-       rngGMVcorm2 = gsl::gsl_vector_alloc(corm2Dim);
     }
-    double pm1, pm2, pm3;
+    double pm1 = 0, pm2 = 0, pm3 = 0;
     double* simup = new double[3 * simulateTimes];
+    MKL_INT errcode;
 
     // prepare for mkdf
     // initialize the array to 0
-    gsl::gsl_vector * zeroVector_orgcorm = gsl::gsl_vector_calloc(orgcormDim);
-    gsl::gsl_vector * zeroVector_corm2 = gsl::gsl_vector_calloc(corm2Dim);
+    float * zeroVector_orgcorm = new float[orgcormDim]();
+    float * zeroVector_corm2 = new float[corm2Dim]();
     // rng seed
-    gsl::gsl_rng * r_global = gsl::gsl_rng_alloc(gsl::gsl_rng_default);
-    struct timeval ts; // Seed generation based on time
-    gettimeofday(&ts,NULL);
-    unsigned long mySeed = ts.tv_sec + ts.tv_usec;
-    gsl::gsl_rng_set(r_global, mySeed);
-    //cholesky for orgcorm
-    gsl::gsl_matrix * A_orgcorm = gsl::gsl_matrix_alloc(orgcormDim, orgcormDim);
-    for (int i = 0; i < orgcormDim; i++)
-        for (int j = 0; j < orgcormDim; j++){
-            gsl::gsl_matrix_set(A_orgcorm, i, j, orgcorm[i * orgcormDim + j]);
-        }
-    gsl::gsl_linalg_cholesky_decomp1(A_orgcorm);
-    //cholesky for corm2
-    gsl::gsl_matrix * A_corm2 = gsl::gsl_matrix_alloc(corm2Dim, corm2Dim);
-    for (int i = 0; i < corm2Dim; i++)
-        for (int j = 0; j < corm2Dim; j++){
-            gsl::gsl_matrix_set(A_corm2, i, j, corm2[i * corm2Dim + j]);
-        }
-    gsl::gsl_linalg_cholesky_decomp1(A_corm2);
+    VSLStreamStatePtr stream;
+    VSLStreamStatePtr streamPriv[threadsNum];
+    MKL_INT BRNG = VSL_BRNG_MCG31;
+    MKL_INT SEED = (unsigned)time(0);
+    errcode = vslNewStream(&stream, BRNG, SEED); // Creat main stream
+    for(int i = 0; i < threadsNum; i++)
+    {
+        errcode = vslCopyStream(&streamPriv[i], stream);
+        errcode = vslLeapfrogStream(streamPriv[i], (MKL_INT)i, threadsNum);
+    }
+    //cholesky for corm
+    float* T_orgcorm =  new float [orgcormDim * orgcormDim];
+    for (int i = 0; i < orgcormDim * orgcormDim; i++) { T_orgcorm[i] = orgcorm[i]; }
+    float* T_corm2 =  new float [corm2Dim * corm2Dim];
+    for (int i = 0; i < corm2Dim * corm2Dim; i++) { T_corm2[i] = corm2[i]; }
+    errcode = LAPACKE_spotrf(LAPACK_ROW_MAJOR, 'U', (lapack_int)orgcormDim, T_orgcorm, (lapack_int)orgcormDim);
+    errcode = LAPACKE_spotrf(LAPACK_ROW_MAJOR, 'U', (lapack_int)corm2Dim, T_corm2, (lapack_int)corm2Dim);
 
     timeElapse(time_start, "pretreatment");
 
@@ -92,20 +87,58 @@ int main(int argc, char * argv[]) {
 #   pragma omp parallel for \
     num_threads(threadsNum) \
     private(pm1, pm2, pm3) \
-    shared(swit, snpn, thv, orgcormDim, corm2Dim, r_global, A_orgcorm, A_corm2, simup) \
+    shared(swit, snpn, thv, orgcorm, corm2, orgcormDim, corm2Dim, streamPriv, zeroVector_orgcorm, zeroVector_corm2, T_orgcorm, T_corm2, simup) \
     schedule(dynamic)
     for (int i = 0; i < simulateTimes; i++) {
-        mkdf(rngGMVOrgcorm, snpn, r_global, zeroVector_orgcorm, A_orgcorm, tm, orgcormDim);
+        int threadID = omp_get_thread_num();
+        errcode = vsRngGaussianMV(VSL_RNG_METHOD_GAUSSIANMV_BOXMULLER2, 
+                    streamPriv[threadID], snpn, tm, 
+                    orgcormDim, VSL_MATRIX_STORAGE_FULL, zeroVector_orgcorm, T_orgcorm);
+        // test
+        // if (i == 0) {
+        //     string outputFilePath;
+        //     fstream outputFile;
+        //     outputFilePath = outputFileDir + "/tm1";
+        //     outputFile.open(outputFilePath.data(), ios::out);
+        //     outputFile << scientific << setprecision(5);
+        //     for (int j = 0; j < snpn; j++) {
+        //         for (int k = 0; k < orgcormDim; k++) {
+        //             outputFile << tm[j * orgcormDim + k] << "\t";
+        //         }
+        //         outputFile << endl;
+        //     }
+        //     outputFile.close();
+        // }
+        // test end
 
         metafSimulation(tm, orgcorm, sigeffcorm, thv, es, orgcormDim, pm1, snpn);
         sortrt(tm, orgcorm, orgcormDim, thv, pm3, snpn);
         if (swit) {
-            mkdf(rngGMVcorm2, snpn, r_global, zeroVector_corm2, A_corm2, tm, corm2Dim);
+            errcode = vsRngGaussianMV(VSL_RNG_METHOD_GAUSSIANMV_BOXMULLER2, 
+                                streamPriv[threadID], snpn, tm, 
+                                corm2Dim, VSL_MATRIX_STORAGE_FULL, zeroVector_corm2, T_corm2);
+        // test
+        // if (i == 0) {
+        //     string outputFilePath;
+        //     fstream outputFile;
+        //     outputFilePath = outputFileDir + "/tm2";
+        //     outputFile.open(outputFilePath.data(), ios::out);
+        //     outputFile << scientific << setprecision(5);
+        //     for (int j = 0; j < snpn; j++) {
+        //         for (int k = 0; k < corm2Dim; k++) {
+        //             outputFile << tm[j * corm2Dim + k] << "\t";
+        //         }
+        //         outputFile << endl;
+        //     }
+        //     outputFile.close();
+        // }
+        // test end
+
             sortrt(tm, corm2, corm2Dim, thv, pm2, snpn);
         }
 
         simup[i * 3] = pm1;
-        if (swit) { simup[i * 3 + 1] = pm2; }
+        simup[i * 3 + 1] = pm2; // if swit is false, then pm2 == 0
         simup[i * 3 + 2] = pm3;
     }
 
@@ -120,6 +153,7 @@ int main(int argc, char * argv[]) {
     for (int i = 0; i < simulateTimes; i++) {
         outputFile << simup[i * 3] << "\t";
         if (swit) { outputFile << simup[i * 3 + 1] << "\t"; }
+        outputFile << simup[i * 3 + 2] << "\n";
     }
     outputFile.close();
 
@@ -127,16 +161,13 @@ int main(int argc, char * argv[]) {
     #pragma omp parallel num_threads(threadsNum)
     {
        delete[] tm;
-       gsl::gsl_vector_free(rngGMVOrgcorm);
-       gsl::gsl_vector_free(rngGMVcorm2);
     }
-    gsl::gsl_vector_free(zeroVector_orgcorm);
-    gsl::gsl_vector_free(zeroVector_corm2);
+    delete[] zeroVector_orgcorm;
+    delete[] zeroVector_corm2;
     delete[] orgcorm;
     delete[] corm2;
     delete[] sigeffcorm;
     delete[] es;
-    gsl_rng_free (r_global);
 
     timeElapse(time_start, "output & free memory");
 
@@ -188,19 +219,6 @@ int inputParam(string inputFileDir,
     inputFile.close();
 }
 
-void mkdf(gsl::gsl_vector * generatorRlt, int snpn, gsl::gsl_rng *r, gsl::gsl_vector *zeroVector, gsl::gsl_matrix *A, float *tm, int cormDim) {
-    //random number generator
-    for (int i = 0; i < snpn; i++){
-        gsl::gsl_ran_multivariate_gaussian(r, zeroVector, A, generatorRlt);
-        for (int j = 0; j < cormDim; j++) {
-            *tm = gsl::gsl_vector_get(generatorRlt, j);
-            ++tm;
-        }
-    }
-
-    return;
-}
-
 int metafSimulation(float* tm, float*  bgc, float* efd, float thv, float* es, int dim, double &pm, int snpn) {
     float* scm = new float [dim * dim];
     float* sigwv = new float [dim * dim * 2];
@@ -220,7 +238,7 @@ int metafSimulation(float* tm, float*  bgc, float* efd, float thv, float* es, in
     float alpha = 1.0f, beta = 0.0f;
 
     // init pm
-    pm = 1;
+    pm = 1.0;
     
     for (int i = 0; i < snpn; i++) { // extract each line of tm
         extractId.clear();
@@ -412,34 +430,35 @@ int sortrt(float* tm, float* corm, int dim, float thv, double &pm, int snpn) {
             extractId_tmp.push_back(extractId[j]);
         }
         trtvf(tv, extractId, n, corm, dim, top_tmp);
+        for (int j = 0; j < extractLen; j++) {
+            extractId_tmp[j] = extractId[j];
+        }
 
+        n_tmp = n - 1;
         while (top_tmp < top_current) {
-            top_current = top_tmp;
-            for (int j = 0; j < extractLen; j++) {
-                extractId[j] = extractId_tmp[j];
-            }
-
-            n++;
-            if (n > extractLen) {
+            if (n >= extractLen) {
                 break;
             }
-            trtvf(tv, extractId, n, corm, dim, top_tmp);
+            top_current = top_tmp;
+            float t_tmp = extractId[n_tmp];
+            for (int j = n_tmp; j > n - 1; j--) {
+                extractId[j] = extractId[j - 1];
+            }
+            extractId[n - 1] = t_tmp;
 
-            n_tmp = n;
+            n++;
+
+            trtvf(tv, extractId, n, corm, dim, top_tmp);
+            for (int j = 0; j < extractLen; j++) {
+                extractId_tmp[j] = extractId[j];
+            }
+            n_tmp = n - 1;
             while (top_tmp >= top_current) {
                 n_tmp++;
-                if (n_tmp > extractLen) {
+                if (n_tmp >= extractLen) {
                     break;
                 }
-
-                for (int j = 0; j < extractLen; j++) {
-                    extractId_tmp[j] = extractId[j];
-                }
-                float t_tmp = extractId_tmp[n_tmp];
-                for (int j = n; j < n_tmp; j++) {
-                    extractId_tmp[j + 1] = extractId_tmp[j];
-                }
-                extractId_tmp[n] = t_tmp;
+                extractId_tmp[n - 1] = extractId_tmp[n_tmp];
                 trtvf(tv, extractId_tmp, n, corm, dim, top_tmp);
             }
         }
